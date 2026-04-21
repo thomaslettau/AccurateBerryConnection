@@ -1,0 +1,304 @@
+diff --git a/PP/src/pw2wannier90.f90 b/PP/src/pw2wannier90.f90
+index 86cb065db..9e748918c 100644
+--- a/PP/src/pw2wannier90.f90
++++ b/PP/src/pw2wannier90.f90
+@@ -692,6 +692,7 @@ PROGRAM pw2wannier90
+   ! these are in wannier module.....-> integer :: ispinw, ikstart, ikstop, iknum
+   NAMELIST / inputpp / outdir, prefix, spin_component, wan_mode, &
+        seedname, write_unk, write_amn, write_mmn, write_spn, write_eig,&
++       write_p, write_v,&
+    ! begin change Lopez, Thonhauser, Souza
+        wvfn_formatted, reduce_unk, reduce_unk_factor, &
+        write_unkg, write_uhu, write_dmn, read_sym, & !YN:
+@@ -743,6 +744,8 @@ PROGRAM pw2wannier90
+      write_mmn = .true.
+      write_spn = .false.
+      write_eig = .true.
++     write_p = .false.
++     write_v = .false.
+      ! begin change Lopez, Thonhauser, Souza
+      write_uhu = .false.
+      write_uIu = .false. !ivo
+@@ -798,6 +801,8 @@ PROGRAM pw2wannier90
+   CALL mp_bcast(write_amn,ionode_id, world_comm)
+   CALL mp_bcast(write_mmn,ionode_id, world_comm)
+   CALL mp_bcast(write_eig,ionode_id, world_comm)
++  CALL mp_bcast(write_p,ionode_id, world_comm)
++  CALL mp_bcast(write_v,ionode_id, world_comm)
+   ! begin change Lopez, Thonhauser, Souza
+   CALL mp_bcast(write_uhu,ionode_id, world_comm)
+   CALL mp_bcast(write_uIu,ionode_id, world_comm) !ivo
+@@ -877,6 +882,8 @@ PROGRAM pw2wannier90
+     call errore('pw2wannier90','Sigma in the SCDM method must be positive.', 1)
+   IF (irr_bz) THEN
+      IF (gamma_only) CALL errore('pw2wannier90', "irr_bz and gamma_only are not compatible", 1)
++     IF (write_p) CALL errore('pw2wannier90', "irr_bz and write_p not implemented", 1)
++     IF (write_v) CALL errore('pw2wannier90', "irr_bz and write_v not implemented", 1)
+      IF (write_spn) CALL errore('pw2wannier90', "irr_bz and write_spn not implemented", 1)
+      IF (write_unk) CALL errore('pw2wannier90', "irr_bz and write_unk not implemented", 1)
+      IF (write_uHu) CALL errore('pw2wannier90', "irr_bz and write_uHu not implemented", 1)
+@@ -1048,6 +1055,32 @@ PROGRAM pw2wannier90
+         WRITE(stdout,*) ' --------------------------'
+         WRITE(stdout,*)
+      ENDIF
++     IF(write_p) THEN
++        WRITE(stdout,*) ' --------------------------'
++        WRITE(stdout,*) ' *** Write momentum matrix'
++        WRITE(stdout,*) ' --------------------------'
++        WRITE(stdout,*)
++        CALL write_momentum
++        WRITE(stdout,*)
++     ELSE
++        WRITE(stdout,*) ' --------------------------------'
++        WRITE(stdout,*) ' *** Momentum matrix not written '
++        WRITE(stdout,*) ' --------------------------------'
++        WRITE(stdout,*)
++     ENDIF
++     IF(write_v) THEN
++        WRITE(stdout,*) ' --------------------------'
++        WRITE(stdout,*) ' *** Write velocity matrix'
++        WRITE(stdout,*) ' --------------------------'
++        WRITE(stdout,*)
++        CALL write_velocity
++        WRITE(stdout,*)
++     ELSE
++        WRITE(stdout,*) ' --------------------------------'
++        WRITE(stdout,*) ' *** Velocity matrix not written '
++        WRITE(stdout,*) ' --------------------------------'
++        WRITE(stdout,*)
++     ENDIF
+      IF(write_unk) THEN
+         WRITE(stdout,*) ' --------------------'
+         WRITE(stdout,*) ' *** Write plot info '
+@@ -1089,6 +1122,8 @@ PROGRAM pw2wannier90
+      CALL print_clock('compute_shc')
+      CALL print_clock('compute_orb')
+      CALL print_clock('write_unk')
++     CALL print_clock('write_p')
++     CALL print_clock('write_v')
+      CALL print_clock('write_parity')
+      !
+      WRITE(stdout, '(/5x, "Internal routines:")')
+@@ -6753,6 +6788,199 @@ SUBROUTINE write_band
+    !
+ END SUBROUTINE write_band
+ 
++SUBROUTINE write_momentum
++   USE io_global,  ONLY : stdout, ionode
++   USE constants,  ONLY : tpi, bohr => BOHR_RADIUS_ANGS
++   USE mp,         ONLY : mp_barrier, mp_sum
++   USE mp_world,   ONLY : world_comm
++   USE mp_pools,   ONLY : me_pool, root_pool, my_pool_id, inter_pool_comm
++   USE wavefunctions, ONLY : evc
++   USE io_files, ONLY : nwordwfc, iunwfc, restart_dir
++   USE pw_restart_new,       ONLY : read_collected_wfc
++   USE wvfct,      ONLY : nbnd, npwx
++   USE gvect,      ONLY : ngm, g
++   USE klist,      ONLY : nkstot, xk, ngk, igk_k, nks
++   USE lsda_mod,   ONLY : nspin, lsda, isk
++   USE cell_base,  ONLY : tpiba
++   USE wannier
++   !
++   IMPLICIT NONE
++   !
++   CHARACTER(LEN=256) :: filename
++   INTEGER :: ik, ibndA, ibndB, ibndA1, ibndB1, ikevc, ikevc_g, ierr
++   INTEGER :: ig, npw
++   COMPLEX(DP) :: p(3), caux
++   !
++   CHARACTER(LEN=6), EXTERNAL :: int_to_char
++   INTEGER, EXTERNAL :: global_kpoint_index
++
++   CALL start_clock( 'write_p' )
++   !
++   IF (me_pool .ne. root_pool) THEN
++       write(stdout, *) 'WARNING: write_momentum: pool parallelization not tested'
++   ENDIF
++   IF (wan_mode == 'standalone') THEN
++      IF (me_pool == root_pool) THEN
++         filename = TRIM(seedname) // ".p"
++         IF (.NOT. ionode) filename = TRIM(filename) // TRIM(int_to_char(my_pool_id+1))
++         OPEN(NEWUNIT=iun_p, FILE=TRIM(filename), FORM='FORMATTED', STATUS='REPLACE')
++      ENDIF
++   ELSE
++      CALL errore('write_momentum', 'only wan_mode standalone implemented', 1)
++   ENDIF
++   !
++   DO ik = 1, nks
++      CALL print_progress(ik, nks)
++      npw = ngk(ik)
++      ikevc = ik - ikstart + 1
++      ikevc_g = global_kpoint_index(nkstot, ik) - ikstart + 1
++      CALL read_collected_wfc ( restart_dir(), ikevc_g, evc )
++      ibndA1 = 0
++      DO ibndA = 1, nbnd
++         IF (excluded_band(ibndA)) CYCLE
++         ibndA1 = ibndA1 + 1
++         ibndB1 = 0
++         DO ibndB = 1, nbnd
++            IF (excluded_band(ibndB)) CYCLE
++            ibndB1 = ibndB1 + 1
++            p = 0
++            DO ig=1,npw
++               caux = conjg(evc(ig,ibndB))*evc(ig,ibndA)
++               ! Non collinear case
++               IF ( nspin == 4 ) THEN
++                  caux = caux + conjg(evc(ig+npwx,ibndB))*evc(ig+npwx,ibndA)
++               ENDIF
++               p = p + g(:,igk_k(ig, ikevc)) * caux
++            ENDDO
++            CALL mp_sum(p, world_comm)
++            IF (ibndA == ibndB) THEN
++               p = p + xk(:, ik)
++            ENDIF
++            ! convert to cartesian coordinates (inverse Angstrom)
++            p = p * tpiba / bohr
++            IF (me_pool == root_pool) WRITE (iun_p,'(3I7,6(E20.12,1x))') ibndB1, ibndA1, ikevc_g, p(:)
++         ENDDO
++      ENDDO
++     ENDDO
++   !
++   IF (me_pool == root_pool) CLOSE(iun_p, STATUS="KEEP")
++   CALL mp_barrier(world_comm)
++   !
++   CALL utility_merge_files("p", .TRUE.)
++   !
++   CALL stop_clock( 'write_p' )
++   !
++END SUBROUTINE write_momentum
++
++SUBROUTINE write_velocity
++   USE io_global,  ONLY : stdout, ionode
++   USE constants,  ONLY : bohr => BOHR_RADIUS_ANGS
++   USE mp,         ONLY : mp_barrier, mp_sum
++   USE mp_world,   ONLY : world_comm
++   USE mp_pools,   ONLY : me_pool, root_pool, my_pool_id, inter_pool_comm
++   USE io_files,   ONLY : nwordwfc, iunwfc
++   USE wvfct,      ONLY : nbnd, et, npwx
++   USE klist,      ONLY : nkstot, xk, ngk, igk_k, nks
++   USE lsda_mod,   ONLY : lsda, isk
++   USE uspp,       ONLY : nkb, vkb, okvan
++   USE becmod,     ONLY : bec_type, becp, calbec, &
++                          allocate_bec_type, deallocate_bec_type
++
++   USE lsda_mod,   ONLY : nspin, lsda, isk
++   USE wavefunctions, ONLY : evc
++   USE uspp_init,            ONLY : init_us_2
++   USE noncollin_module,     ONLY : noncolin, npol
++   USE wannier
++   !
++   IMPLICIT NONE
++   !
++   CHARACTER(LEN=256) :: filename
++   INTEGER :: ik, ibndA, ibndB, ibndA1, ibndB1, ikevc, ikevc_g, ierr
++
++   INTEGER :: npw, ipol, ig
++   REAL(DP) :: vers(3)
++   COMPLEX(DP) :: v, vc(nbnd, nbnd, 3)
++   TYPE(bec_type) :: becp2
++   COMPLEX(DP) :: ppsi(npwx * npol, nbnd) ! , ppsi_us(npwx,npol,nbnd_occ)
++   !
++   CHARACTER(LEN=6), EXTERNAL :: int_to_char
++   INTEGER, EXTERNAL :: global_kpoint_index
++   !
++   CALL start_clock( 'write_v' )
++   !
++   IF (wan_mode == 'standalone') THEN
++      IF (me_pool == root_pool) THEN
++         filename = TRIM(seedname) // ".v"
++         IF (.NOT. ionode) filename = TRIM(filename) // TRIM(int_to_char(my_pool_id+1))
++         OPEN(NEWUNIT=iun_v, FILE=TRIM(filename), FORM='FORMATTED', STATUS='REPLACE')
++      ENDIF
++   ELSE
++      CALL errore('write_velocity', 'only wan_mode standalone implemented', 1)
++   ENDIF
++   !
++   CALL allocate_bec_type(nkb, nbnd, becp)
++   CALL allocate_bec_type(nkb, nbnd, becp2)
++   DO ik = 1, nks
++      CALL print_progress(ik, nks)
++      IF (lsda .AND. isk(ik) /= ispinw) CYCLE
++      ikevc = ik - ikstart + 1
++      ikevc_g = global_kpoint_index(nkstot, ik) - ikstart + 1
++      !
++      npw = ngk(ik)
++      CALL init_us_2 (npw, igk_k(1,ik), xk(1,ik), vkb)
++      CALL davcio (evc, 2*nwordwfc, iunwfc, ik, -1)
++      CALL calbec (npw, vkb, evc, becp, nbnd)
++      DO ipol=1, 3
++         vers(:) = 0
++         vers(ipol) = 1
++         CALL commutator_Hx_psi (ik, nbnd, vers, becp, becp2, ppsi)
++         ibndA1 = 0
++         DO ibndA = 1, nbnd
++            IF (excluded_band(ibndA)) CYCLE
++            ibndA1 = ibndA1 + 1
++            ibndB1 = 0
++            DO ibndB = 1, nbnd
++               IF (excluded_band(ibndB)) CYCLE
++               ibndB1 = ibndB1 + 1
++               v = 0
++               DO ig=1, npw
++                  v = v + conjg(evc(ig, ibndB)) * ppsi(ig, ibndA)
++                  ! Non collinear case
++                  IF ( nspin == 4 ) THEN
++                     v = v + conjg(evc(ig+npwx,ibndB))*evc(ig+npwx,ibndA)
++                  ENDIF
++               ENDDO
++               CALL mp_sum(v, world_comm)
++               vc(ibndB, ibndA, ipol) = CMPLX(0_DP, 1_DP) * v
++            ENDDO
++         ENDDO
++      ENDDO
++      IF (me_pool == root_pool) THEN
++         ibndA1 = 0
++         DO ibndA = 1, nbnd
++            IF (excluded_band(ibndA)) CYCLE
++            ibndA1 = ibndA1 + 1
++            ibndB1 = 0
++            DO ibndB = 1, nbnd
++               IF (excluded_band(ibndB)) CYCLE
++               ibndB1 = ibndB1 + 1
++               WRITE (iun_v,'(3I7,6(E20.12,1x))') ibndB1, ibndA1, ikevc_g, vc(ibndB, ibndA, :)
++            ENDDO
++         ENDDO
++      ENDIF
++   ENDDO
++
++   CALL deallocate_bec_type(becp)
++   CALL deallocate_bec_type(becp2)
++   IF (me_pool == root_pool) CLOSE(iun_v, STATUS="KEEP")
++   CALL mp_barrier(world_comm)
++   !
++   CALL utility_merge_files("v", .TRUE.)
++   !
++   CALL stop_clock( 'write_v' )
++   !
++END SUBROUTINE write_velocity
++
+ SUBROUTINE write_plot
+    USE io_global,  ONLY : stdout, ionode
+    USE mp_pools,        ONLY : me_pool, root_pool
+diff --git a/PP/src/wannier_mod.f90 b/PP/src/wannier_mod.f90
+index 5e84e8c5e..8aa1d74b4 100644
+--- a/PP/src/wannier_mod.f90
++++ b/PP/src/wannier_mod.f90
+@@ -21,8 +21,8 @@ module wannier
+    integer, allocatable :: num_sph(:)   ! num. func. in lin. comb., (n_wannier)
+    logical, allocatable :: excluded_band(:)
+    ! begin change Lopez, Thonhauser, Souza
+-   integer  :: iun_nnkp,iun_mmn,iun_amn,iun_band,iun_spn,iun_plot,iun_parity,&
+-        nnbx,nexband,iun_uHu,&
++   integer  :: iun_nnkp,iun_mmn,iun_amn,iun_band,iun_spn,&
++        iun_p,iun_v,iun_plot,iun_parity, nnbx,nexband,iun_uHu,&
+         iun_uIu,& !ivo
+    ! end change Lopez, Thonhauser, Souza
+         iun_sHu, iun_sIu ! shc
+@@ -36,6 +36,7 @@ module wannier
+    logical               :: logwann, wvfn_formatted, write_unk, write_eig, &
+    ! begin change Lopez, Thonhauser, Souza
+                             write_amn,write_mmn,reduce_unk,write_spn,&
++                            write_p, write_v,&
+                             write_unkg,write_uhu,&
+                             write_dmn,read_sym, & !YN
+                             write_uIu, spn_formatted, uHu_formatted, uIu_formatted, & !ivo
