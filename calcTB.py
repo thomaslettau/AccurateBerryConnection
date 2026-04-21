@@ -124,10 +124,16 @@ class WannierCalculator:
     # Interpolation schemes for Berry connection #
     #                                            #
     ##############################################
+    # The FFT here uses the opposite sign convension compared to the manuscript 
+    # "Self-consistent evaluation of the Berry connection for Wannier functions"
+    # to which the equations numbers refer to
+    #############################################
 
     def calc_MV(self):
         Mmod = self.M.copy()
+        # Eq. (25)
         np.einsum("xyzsaa->xyzsa", Mmod)[:] = 1j * np.log(np.einsum("xyzsaa->xyzsa", Mmod)).imag
+        # Eq. (24)
         rk = 1j * np.einsum("b,ba,xyzbmn->xyzmna", self.wb, self.k_crys2cart(self.bvec), Mmod)
         rr = np.fft.fftn(rk, axes=(0, 1, 2), norm="forward")
         rC = {}
@@ -137,16 +143,19 @@ class WannierCalculator:
     
     def calc_sym(self):
         Mmod = self.M.copy()
+        # Eq. (25)
         np.einsum("xyzsaa->xyzsa", Mmod)[:] = 1j * np.log(np.einsum("xyzsaa->xyzsa", Mmod)).imag
         mmnR = np.fft.fftn(Mmod, axes=(0, 1, 2), norm="forward")
         rC = {}
         ba = np.einsum("a,ab->ab", self.wb, self.k_crys2cart(self.bvec))
         for Rput, (Rorig, _) in self.ndegen.items():
+            # Eq. (32) in real-space
             phase = self.bvec @ Rput
             rC[*Rput] = 1j *  np.einsum("xs,xmn,x->mns", ba, mmnR[*Rorig], np.exp(-1j * np.pi * phase))
         return rC
 
     def calc_Lihm(self):
+        # Eq. (27)
         R0 = - np.einsum("b,ba,xyzbm->ma", self.wb, self.k_crys2cart(self.bvec), np.log(np.einsum("xyzsaa->xyzsa", self.M)).imag) / self.nk
         mmnR = np.fft.fftn(self.M, axes=(0, 1, 2), norm="forward")
         rC = {}
@@ -154,6 +163,7 @@ class WannierCalculator:
         Rfrac = R0 @ self.recipLattice.T / ( 2 * np.pi)
         RfracDiff = Rfrac[None, :, :] + Rfrac[:, None, :]
         for Rput, (Rorig, _) in self.ndegen.items():
+            # Eq. (28)
             phase = np.einsum("bx,mnx->bmn", self.bvec, np.array(Rput)[None, None, :] - RfracDiff)
             rC[*Rput] = 1j *  np.einsum("xs,xmn,xmn->mns", ba, mmnR[*Rorig], np.exp(-1j * np.pi * phase))
         for n in range(self.nw):
@@ -161,6 +171,7 @@ class WannierCalculator:
         return rC
 
     def calc_log(self):
+        # Eq. (40)
         nb = self.bvec.shape[0]
         with threadpool_limits(limits=1, user_api='openmp'):
             with Pool(psutil.cpu_count(logical=False)) as p:
@@ -175,6 +186,7 @@ class WannierCalculator:
         return rC
 
     def calc_clog(self, maxIterations=20):
+        # Eqs. (41) - (45)
         nb = self.bvec.shape[0]
         nw = self.M.shape[-1]
         with threadpool_limits(limits=1, user_api='openmp'):
@@ -194,7 +206,7 @@ class WannierCalculator:
             bDk1 = np.fft.ifftn(np.einsum("xyzbmn,xyzb->xyzbmn", Rb, phaseFac), axes=(0, 1, 2), norm="forward")
             bDk2 = bDk
             bDk3 = np.fft.ifftn(np.einsum("xyzbmn,xyzb->xyzbmn", Rb, np.conj(phaseFac)), axes=(0, 1, 2), norm="forward")
-            # Magnus expansion of 4th order of path ordered integral
+            # Magnus expansion of 4th order of path ordered integral - Eq. (42)
             omegaDkb = 1/6 * (bDk1 + 4 * bDk2 + bDk3) - (bDk1 @ bDk3 - bDk3 @ bDk1 ) / 12
             bDk = bDk - omegaDkb + logMkb
             newError = np.linalg.norm(omegaDkb - logMkb)
@@ -214,6 +226,7 @@ class WannierCalculator:
         return rC
 
     def calc_altLog(self):
+        # Eq. (B1)
         nb = self.bvec.shape[0]
         mmnR = np.fft.fftn(self.M, axes=(0, 1, 2), norm="forward")
         s = self.M.shape
@@ -239,6 +252,7 @@ class WannierCalculator:
         return rC
 
     def calc_altclog(self, maxIterations=20):
+        # similar to Eqs. (41) - (45), but being based on Eq. (B1)
         nb = self.bvec.shape[0]
         nw = self.M.shape[-1]
         s = self.M.shape
@@ -291,6 +305,7 @@ class WannierCalculator:
         return rC
 
     def calc_clog6(self, maxIterations=20):
+        # Eqs. (41)-(45) however with 6th-order Magnus expansion
         nb = self.bvec.shape[0]
         nw = self.M.shape[-1]
         with threadpool_limits(limits=1, user_api='openmp'):
