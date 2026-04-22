@@ -11,7 +11,8 @@ import atu
 def main(seedname, direction, schemes, visType, normalize):
     assert len(direction) == 2
     d1, d2 = [ int(ord(d)-ord("x")) for d in direction]
-    data = np.load(seedname + "_eps.npz")
+    fname = seedname if seedname.endswith(".npz") else seedname + "_eps.npz"
+    data = np.load(fname)
     fig, ax = plt.subplots(1, 1, figsize=(6, 5))
     omega = data['omega']
     keys = {}

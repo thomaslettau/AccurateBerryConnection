@@ -28,7 +28,8 @@ def createParser():
 
 
 def main(seedname, enforce_hermiticity, real_wf, expand_grid, repeat_grid):
-    data = {k : v  for k, v in np.load(seedname + "_tb.npz").items()}
+    fname = seedname if seedname.endswith(".npz") else seedname + "_tb.npz"
+    data = {k : v  for k, v in np.load(fname).items()}
     ksi = KspaceInterpolator(**data)    
     if enforce_hermiticity:
         ksi.enforce_hermiticity()

@@ -22,7 +22,8 @@ def createParser():
     return parser
 
 def main(seedname, dimension, enforce_hermiticity, real_wf):
-    data = {k : v  for k, v in np.load(seedname + "_tb.npz").items()}
+    fname = seedname if seedname.endswith(".npz") else seedname + "_tb.npz"
+    data = {k : v  for k, v in np.load(fname).items()}
     ksi = KspaceInterpolator(**data)    
     if enforce_hermiticity:
         ksi.enforce_hermiticity()
