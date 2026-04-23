@@ -1,6 +1,6 @@
 ### Accurate Berry connection for solids
 
-This repository provides the implementation of different interpolation schemes for the (generalized) Berry connection in solids within the Wannier framework.
+This repository provides the implementation of different interpolation schemes for the Berry connection in solids within the Wannier90 framework.
 The schemes itself are described in the following publication:
 
 Martin Thümmler, Thomas Lettau, Alexander Croy, Ulf Peschel, Stefanie Gräfe,
